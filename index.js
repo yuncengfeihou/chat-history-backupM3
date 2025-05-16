@@ -824,21 +824,17 @@ async function restoreBackup(backupData) {
         }
 
         // --- 步骤 6: 强制重加载 - 通过关闭再打开 ---
-        logDebug('步骤 6: 开始强制重加载流程 (关闭再打开)...');
+        console.log('[聊天自动备份] 步骤 6: 开始强制重加载流程 (关闭再打开)...');
         try {
-            // 6a: 触发关闭聊天
-            logDebug("步骤 6a: 触发 '关闭聊天' (模拟点击 #option_close_chat)");
+            // 6a: 触发关闭聊天 (模拟点击)
+            console.log("[聊天自动备份] 步骤 6a: 触发 '关闭聊天'");
             const closeButton = document.getElementById('option_close_chat');
-            if (closeButton) {
-                closeButton.click();
-            } else {
-                console.warn("未能找到 #option_close_chat 按钮来触发关闭");
-                // 如果找不到按钮，可能需要其他方式，但点击通常是最直接的
-            }
-            await new Promise(resolve => setTimeout(resolve, 800)); // 等待关闭动画和状态更新
+            if (closeButton) closeButton.click();
+            else console.warn("[聊天自动备份] 未能找到 #option_close_chat 按钮");
+            await new Promise(resolve => setTimeout(resolve, 800)); // 等待关闭动画/状态更新
 
-            // 6b: 触发重新选择目标实体
-            logDebug(`步骤 6b: 重新选择目标 ${entityToRestore.isGroup ? '群组' : '角色'} ID: ${entityToRestore.id}`);
+            // 6b: 触发重新选择目标实体 (这会触发新的 CHAT_CHANGED 事件)
+            console.log(`[聊天自动备份] 步骤 6b: 重新选择目标实体 ID: ${entityToRestore.id}`);
             if (entityToRestore.isGroup) {
                 await select_group_chats(entityToRestore.id);
             } else {
@@ -846,9 +842,14 @@ async function restoreBackup(backupData) {
             }
             await new Promise(resolve => setTimeout(resolve, 1000)); // 等待加载和渲染完成
 
-            logDebug('步骤 6: 关闭再打开流程完成，UI应已正确加载');
+            console.log('[聊天自动备份] 步骤 6: 关闭再打开流程完成');
+             // ***增加延迟***：在关闭再打开、UI加载后，给表格插件处理最终 CHAT_CHANGED 的时间
+            console.log('[聊天自动备份] 步骤 6.5: 关闭再打开后等待一段时间...');
+            await new Promise(resolve => setTimeout(resolve, 1000)); // 尝试 1 秒，如果 ReferenceError 依然出现，可以再增加
+            console.log('[聊天自动备份] 步骤 6.5: 延迟结束');
+
         } catch (reloadError) {
-            console.error('[聊天自动备份] 步骤 6 失败: 关闭或重新打开聊天时出错:', reloadError);
+            console.error('[聊天自动备份] 步骤 6 失败:', reloadError);
             toastr.error('重新加载恢复的聊天内容失败，请尝试手动切换聊天。数据已保存。');
         }
 
