@@ -567,218 +567,34 @@ async function performBackupConditional() {
         return;
     }
 
+    // 获取当前设置，包括防抖延迟，以防在延迟期间被修改
     const currentSettings = extension_settings[PLUGIN_NAME];
-     if (!currentSettings || typeof currentSettings.backupDebounceDelay !== 'number') {
-         console.error('[聊天自动备份] 无法获取有效的防抖延迟设置，取消备份');
-         return false;
-     }
-
-    // *** 新增：添加延迟，等待其他插件更新 metadata ***
-    const delay = currentSettings.backupDebounceDelay > 0 ? currentSettings.backupDebounceDelay / 2 : 50; // 使用防抖延迟的一半作为等待时间，或者至少50ms
-     logDebug(`执行条件备份 (performBackupConditional)，等待 ${delay}ms 以确保 metadata 更新`);
-     await new Promise(resolve => setTimeout(resolve, delay));
-    // *** 新增结束 ***
-
-
-    // 再次检查，防止在等待期间上下文变化
-    const chatKeyAfterDelay = getCurrentChatKey();
-    const contextAfterDelay = getContext();
-    if (!chatKeyAfterDelay || chatKeyAfterDelay !== getCurrentChatKey()) { // 比较延迟前后的chatKey，虽然上面的延迟不应该改变chatKey，但安全起见
-         logDebug('等待期间上下文可能已变化，取消本次备份');
-         return false;
+    if (!currentSettings) {
+        console.error('[聊天自动备份] 无法获取当前设置，取消备份');
+        return;
     }
-    // 确保 metadata 对象确实加载了
-     if (!contextAfterDelay.chat_metadata) {
-         console.warn('[聊天自动备份] 等待后 chat_metadata 仍无效，取消备份');
-         return false;
-     }
-     if (!contextAfterDelay.chat || contextAfterDelay.chat.length === 0) {
-         logDebug('等待后聊天记录为空，取消备份');
-         return false;
-     }
 
+    logDebug('执行条件备份 (performBackupConditional)');
+    clearTimeout(backupTimeout); // 取消任何待处理的防抖备份
+    backupTimeout = null;
 
-    // 原始的锁和备份逻辑继续...
     isBackupInProgress = true;
     logDebug('设置备份锁');
     try {
-        // ... 获取 chat 和 metadata ...
-        const context = getContext(); // 再次获取最新的上下文，包含等待后的 metadata
-        const { chat, chat_metadata } = context; // 使用这里获取的 chat 和 chat_metadata
-
-        // ... 后续的深拷贝、保存、清理逻辑 ...
-        const success = await executeBackupLogic_Core(chat, chat_metadata, currentSettings); // 将核心逻辑封装到新函数中并传入数据
+        const success = await executeBackupLogic(currentSettings); // 传递设置给核心逻辑
         if (success) {
-            await updateBackupsList();
+            await updateBackupsList(); // 只有在备份成功或无需备份时才更新列表
         }
-         return success; // 返回核心逻辑的结果
     } catch (error) {
         console.error('[聊天自动备份] 条件备份执行失败:', error);
-        toastr.error(`备份失败: ${error.message || '未知错误'}`, '聊天自动备份');
-         return false;
+        // 错误已在 executeBackupLogic 中处理和提示
     } finally {
         isBackupInProgress = false;
         logDebug('释放备份锁');
     }
 }
 
-// *** 新增：将核心备份逻辑封装到单独的函数，以便传入获取到的数据 ***
-async function executeBackupLogic_Core(chat, chat_metadata, settings) {
-     const currentTimestamp = Date.now();
-     logDebug(`开始执行核心备份逻辑 (封装) @ ${new Date(currentTimestamp).toLocaleTimeString()}, Chat长度: ${chat?.length}`);
-
-     const chatKey = getCurrentChatKey();
-     if (!chatKey) { // 理论上前面已经检查过，这里再检查一次确保
-         console.warn('[聊天自动备份] (封装) 无有效的聊天标识符');
-         return false;
-     }
-
-     const { entityName, chatName } = getCurrentChatInfo();
-     const lastMsgIndex = chat.length - 1;
-     const lastMessage = chat[lastMsgIndex];
-     const lastMessagePreview = lastMessage?.mes?.substring(0, 100) || '(空消息)';
-
-     logDebug(`(封装) 准备备份聊天: ${entityName} - ${chatName}, 消息数: ${chat.length}, 最后消息ID: ${lastMsgIndex}`);
-     logDebug(`(封装) 备份的 metadata 状态:`, chat_metadata); // *** 打印 metadata 状态进行调试 ***
-
-
-     try {
-         // 2. 使用 Worker 进行深拷贝
-         // ... (这部分逻辑保持不变，但现在使用传入的 chat 和 chat_metadata) ...
-         let copiedChat, copiedMetadata;
-         if (backupWorker) {
-             try {
-                 console.time('[聊天自动备份] Web Worker 深拷贝时间');
-                 logDebug('(封装) 请求 Worker 执行深拷贝...');
-                 const result = await performDeepCopyInWorker(chat, chat_metadata); // 使用传入的数据
-                 copiedChat = result.chat;
-                 copiedMetadata = result.metadata;
-                 console.timeEnd('[聊天自动备份] Web Worker 深拷贝时间');
-                 logDebug('(封装) 从 Worker 收到拷贝后的数据');
-             } catch(workerError) {
-                  console.error('[聊天自动备份] (封装) Worker 深拷贝失败，将尝试在主线程执行:', workerError);
-                  // Worker失败，尝试主线程回退
-                  console.time('[聊天自动备份] 主线程深拷贝时间 (Worker失败后)');
-                  try {
-                      copiedChat = structuredClone(chat);
-                      copiedMetadata = structuredClone(chat_metadata);
-                  } catch (structuredCloneError) {
-                     try {
-                         copiedChat = JSON.parse(JSON.stringify(chat));
-                         copiedMetadata = JSON.parse(JSON.stringify(chat_metadata));
-                     } catch (jsonError) {
-                         console.error('[聊天自动备份] (封装) 主线程深拷贝也失败:', jsonError);
-                         throw new Error("无法完成聊天数据的深拷贝"); // 抛出错误终止备份
-                     }
-                  }
-                  console.timeEnd('[聊天自动备份] 主线程深拷贝时间 (Worker失败后)');
-             }
-         } else {
-             // Worker 不可用，直接在主线程执行
-             console.time('[聊天自动备份] 主线程深拷贝时间 (无Worker)');
-             try {
-                  copiedChat = structuredClone(chat);
-                  copiedMetadata = structuredClone(chat_metadata);
-              } catch (structuredCloneError) {
-                 try {
-                     copiedChat = JSON.parse(JSON.stringify(chat));
-                     copiedMetadata = JSON.parse(JSON.stringify(chat_metadata));
-                 } catch (jsonError) {
-                     console.error('[聊天自动备份] (封装) 主线程深拷贝失败:', jsonError);
-                     throw new Error("无法完成聊天数据的深拷贝"); // 抛出错误终止备份
-                 }
-              }
-             console.timeEnd('[聊天自动备份] 主线程深拷贝时间 (无Worker)');
-         }
-
-         if (!copiedChat) {
-              throw new Error("未能获取有效的聊天数据副本");
-         }
-
-         // 3. 构建备份对象
-         const backup = {
-             timestamp: currentTimestamp,
-             chatKey,
-             entityName,
-             chatName,
-             lastMessageId: lastMsgIndex,
-             lastMessagePreview,
-             chat: copiedChat,
-             metadata: copiedMetadata || {} // 确保 metadata 总是对象
-         };
-
-         // 4. 检查当前聊天是否已有基于最后消息ID的备份 (避免完全相同的备份)
-         const existingBackups = await getBackupsForChat(chatKey); // 获取当前聊天的备份
-
-         // 5. 检查重复并处理 (基于 lastMessageId)
-         const existingBackupIndex = existingBackups.findIndex(b => b.lastMessageId === lastMsgIndex);
-         let needsSave = true;
-
-         if (existingBackupIndex !== -1) {
-              // 如果找到相同 lastMessageId 的备份
-             const existingTimestamp = existingBackups[existingBackupIndex].timestamp;
-             if (backup.timestamp > existingTimestamp) {
-                 // 新备份更新，删除旧的同 ID 备份
-                 logDebug(`(封装) 发现具有相同最后消息ID (${lastMsgIndex}) 的旧备份 (时间戳 ${existingTimestamp})，将删除旧备份以便保存新备份 (时间戳 ${backup.timestamp})`);
-                 await deleteBackup(chatKey, existingTimestamp);
-             } else {
-                 // 旧备份更新或相同，跳过本次保存
-                 logDebug(`(封装) 发现具有相同最后消息ID (${lastMsgIndex}) 且时间戳更新或相同的备份 (时间戳 ${existingTimestamp} vs ${backup.timestamp})，跳过本次保存`);
-                 needsSave = false;
-             }
-         }
-
-         if (!needsSave) {
-             logDebug('(封装) 备份已存在或无需更新，跳过保存和全局清理步骤');
-             return false; // 不需要保存，返回 false
-         }
-
-         // 6. 保存新备份到 IndexedDB
-         await saveBackupToDB(backup);
-         logDebug(`(封装) 新备份已保存: [${chatKey}, ${backup.timestamp}]`);
-
-         // --- 优化后的清理逻辑 ---
-         // 7. 获取所有备份的主键并限制总数量
-         // ... (这部分逻辑保持不变) ...
-         logDebug(`(封装) 获取所有备份的主键，以检查是否超出系统限制 (${settings.maxTotalBackups})`);
-         const allBackupKeys = await getAllBackupKeys(); // 调用新函数，只获取键
-
-         if (allBackupKeys.length > settings.maxTotalBackups) {
-             logDebug(`(封装) 总备份数 (${allBackupKeys.length}) 超出系统限制 (${settings.maxTotalBackups})`);
-
-             // 按时间戳升序排序键 (key[1] 是 timestamp)
-             allBackupKeys.sort((a, b) => a[1] - b[1]); // a[1] = timestamp, b[1] = timestamp
-
-             const numToDelete = allBackupKeys.length - settings.maxTotalBackups;
-             const keysToDelete = allBackupKeys.slice(0, numToDelete);
-
-             logDebug(`(封装) 准备删除 ${keysToDelete.length} 个最旧的备份 (基于键)`);
-
-             await Promise.all(keysToDelete.map(key => {
-                 const oldChatKey = key[0];
-                 const oldTimestamp = key[1];
-                 logDebug(`(封装) 删除旧备份 (基于键): chatKey=${oldChatKey}, timestamp=${new Date(oldTimestamp).toLocaleString()}`);
-                 return deleteBackup(oldChatKey, oldTimestamp);
-             }));
-             logDebug(`(封装) ${keysToDelete.length} 个旧备份已删除`);
-         } else {
-             logDebug(`(封装) 总备份数 (${allBackupKeys.length}) 未超出限制 (${settings.maxTotalBackups})，无需清理`);
-         }
-         // --- 清理逻辑结束 ---
-
-         // 8. UI提示 (这里只返回状态，提示由外部调用者负责)
-         logDebug(`(封装) 成功完成聊天备份及可能的清理: ${entityName} - ${chatName}`);
-
-         return true; // 表示备份成功（或已跳过但无错误）
-
-     } catch (error) {
-         console.error('[聊天自动备份] (封装) 备份或清理过程中发生严重错误:', error);
-         // 错误已在外部调用者中处理和提示
-         return false; // 表示备份/清理操作失败
-     }
-}
-
-// 修改 performBackupDebounced 函数，使其也使用新的条件备份函数
+// --- 防抖备份函数 (类似 saveChatDebounced) ---
 function performBackupDebounced() {
     // 获取调用时的上下文和设置
     const scheduledChatKey = getCurrentChatKey();
@@ -790,45 +606,41 @@ function performBackupDebounced() {
         backupTimeout = null;
         return;
     }
-
+    
     if (!currentSettings || typeof currentSettings.backupDebounceDelay !== 'number') {
         console.error('[聊天自动备份] 无法获取有效的防抖延迟设置，取消防抖');
         clearTimeout(backupTimeout);
         backupTimeout = null;
         return;
     }
-
+    
     const delay = currentSettings.backupDebounceDelay; // 使用当前设置的延迟
 
     logDebug(`计划执行防抖备份 (延迟 ${delay}ms), 针对 ChatKey: ${scheduledChatKey}`);
     clearTimeout(backupTimeout); // 清除旧的定时器
 
     backupTimeout = setTimeout(async () => {
-        // 在定时器内部，再次检查上下文
-        const currentChatKey = getCurrentChatKey();
+        const currentChatKey = getCurrentChatKey(); // 获取执行时的 ChatKey
+
+        // 关键: 上下文检查
         if (currentChatKey !== scheduledChatKey) {
             logDebug(`上下文已更改 (当前: ${currentChatKey}, 计划时: ${scheduledChatKey})，取消此防抖备份`);
             backupTimeout = null;
-            return;
+            return; // 中止备份
         }
 
         logDebug(`执行延迟的备份操作 (来自防抖), ChatKey: ${currentChatKey}`);
         // 只有上下文匹配时才执行条件备份
-        await performBackupConditional(); // 调用新的条件备份函数
+        await performBackupConditional();
         backupTimeout = null; // 清除定时器 ID
     }, delay);
 }
 
-
-// 修改 performManualBackup 函数，使其也使用新的条件备份函数
+// --- 手动备份 ---
 async function performManualBackup() {
     console.log('[聊天自动备份] 执行手动备份 (调用条件函数)');
-     // 手动备份也走条件检查和锁逻辑，并等待其他插件更新
-    const success = await performBackupConditional();
-    if (success) {
-        toastr.success('已手动备份当前聊天', '聊天自动备份');
-    }
-     // 失败时的提示已在 performBackupConditional 内部处理
+    await performBackupConditional(); // 手动备份也走条件检查和锁逻辑
+    toastr.success('已手动备份当前聊天', '聊天自动备份');
 }
 
 // --- 恢复逻辑 ---
