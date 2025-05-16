@@ -392,10 +392,10 @@ function performDeepCopyInWorker(chat, metadata) {
     });
 }
 
-// 修改后的 executeBackupLogic 函数名和实现
+// --- Core backup logic (extracted from executeBackupLogic) ---
 async function executeBackupLogic_Core(chat, chat_metadata_to_backup, settings) {
     const currentTimestamp = Date.now();
-    logDebug(`开始执行核心备份逻辑 @ ${new Date(currentTimestamp).toLocaleTimeString()}`);
+    logDebug(`(封装) 开始执行核心备份逻辑 @ ${new Date(currentTimestamp).toLocaleTimeString()}`);
 
     // 1. 前置检查 (使用传入的数据，而不是 getContext())
     const chatKey = getCurrentChatKey(); // 这个仍然需要获取当前的chatKey
@@ -443,7 +443,7 @@ async function executeBackupLogic_Core(chat, chat_metadata_to_backup, settings) 
                  console.timeEnd('[聊天自动备份] 主线程深拷贝时间 (Worker失败后)');
             }
         } else {
-            // Worker 不可用，直接在主线程执行 (使用传入的 chat 和 chat_metadata_to_backup)
+            // Worker 不可用，直接在主线程执行
             console.time('[聊天自动备份] 主线程深拷贝时间 (无Worker)');
             try {
                  copiedChat = structuredClone(chat);
@@ -454,7 +454,7 @@ async function executeBackupLogic_Core(chat, chat_metadata_to_backup, settings) 
                     copiedMetadata = JSON.parse(JSON.stringify(chat_metadata_to_backup)); // 使用传入的数据
                 } catch (jsonError) {
                     console.error('[聊天自动备份] (封装) 主线程深拷贝失败:', jsonError);
-                    throw new Error("无法完成聊天数据的深拷贝");
+                    throw new Error("无法完成聊天数据的深拷贝"); // 抛出错误终止备份
                 }
              }
             console.timeEnd('[聊天自动备份] 主线程深拷贝时间 (无Worker)');
@@ -490,7 +490,6 @@ async function executeBackupLogic_Core(chat, chat_metadata_to_backup, settings) 
                 // 新备份更新，删除旧的同 ID 备份
                 logDebug(`发现具有相同最后消息ID (${lastMsgIndex}) 的旧备份 (时间戳 ${existingTimestamp})，将删除旧备份以便保存新备份 (时间戳 ${backup.timestamp})`);
                 await deleteBackup(chatKey, existingTimestamp);
-                // 注意：不需要从 existingBackups 数组中 splice，因为它不再用于全局清理
             } else {
                 // 旧备份更新或相同，跳过本次保存
                 logDebug(`发现具有相同最后消息ID (${lastMsgIndex}) 且时间戳更新或相同的备份 (时间戳 ${existingTimestamp} vs ${backup.timestamp})，跳过本次保存`);
@@ -540,7 +539,7 @@ async function executeBackupLogic_Core(chat, chat_metadata_to_backup, settings) 
         // --- 清理逻辑结束 ---
 
         // 8. UI提示
-        logDebug(`成功完成聊天备份及可能的清理: ${entityName} - ${chatName}`);
+        logDebug(`(封装) 成功完成聊天备份及可能的清理: ${entityName} - ${chatName}`);
 
         return true; // 表示备份成功（或已跳过但无错误）
 
@@ -550,7 +549,7 @@ async function executeBackupLogic_Core(chat, chat_metadata_to_backup, settings) 
     }
 }
 
-// 修改后的 performBackupConditional 函数
+// --- 条件备份函数 (类似 saveChatConditional) ---
 async function performBackupConditional() {
     if (isBackupInProgress) {
         logDebug('备份已在进行中，跳过本次请求');
@@ -598,7 +597,7 @@ async function performBackupConditional() {
          });
         return false;
     }
-    if (!context.chatMetadata) {
+    if (!context.chatMetadata) { // <--- 修改这里！从 chat_metadata 改为 chatMetadata
         console.warn('[聊天自动备份] chatMetadata 无效 (在 saveChatConditional 后)，取消备份');
         // 打印 Cancellation Details
         console.warn('[聊天自动备份] Cancellation Details (chatMetadata Invalid):', {
@@ -614,7 +613,7 @@ async function performBackupConditional() {
         return false;
     }
     // 检查 chatMetadata.sheets 是否存在且非空
-    if (!context.chatMetadata.sheets || context.chatMetadata.sheets.length === 0) {
+    if (!context.chatMetadata.sheets || context.chatMetadata.sheets.length === 0) { // <--- 修改这里！从 chat_metadata 改为 chatMetadata
         console.warn('[聊天自动备份] chatMetadata.sheets 无效或为空 (在 saveChatConditional 后)，取消备份');
         // 打印 Cancellation Details
         console.warn('[聊天自动备份] Cancellation Details (sheets Invalid/Empty):', {
@@ -635,7 +634,7 @@ async function performBackupConditional() {
     try {
         // 现在 context.chatMetadata 应该包含了正确的数据
         const { chat } = context; // chat 属性名是正确的
-        const chat_metadata_to_backup = context.chatMetadata; // 使用正确的属性名获取要备份的元数据
+        const chat_metadata_to_backup = context.chatMetadata; // <--- 使用正确的属性名获取要备份的元数据
         const success = await executeBackupLogic_Core(chat, chat_metadata_to_backup, currentSettings); // 传递正确的元数据
         if (success) {
             await updateBackupsList();
@@ -796,7 +795,7 @@ async function restoreBackup(backupData) {
         logDebug(`步骤 5: 临时替换全局 chat 和 metadata 以便保存...`);
         let globalContext = getContext();
         let originalGlobalChat = globalContext.chat.slice();
-        let originalGlobalMetadata = structuredClone(globalContext.chat_metadata);
+        let originalGlobalMetadata = structuredClone(globalContext.chatMetadata);
 
         globalContext.chat.length = 0;
         chatToSave.forEach(msg => globalContext.chat.push(msg));
@@ -1395,3 +1394,11 @@ jQuery(async () => {
         );
     }
 });
+
+// --- 核心备份逻辑 (接收 settings 作为参数) ---
+async function executeBackupLogic(settings) {
+    const context = getContext();
+    const { chat, chatMetadata } = context; // 修改为使用 chatMetadata
+
+    return await executeBackupLogic_Core(chat, chatMetadata, settings);
+}
