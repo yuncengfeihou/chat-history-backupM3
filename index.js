@@ -392,7 +392,7 @@ function performDeepCopyInWorker(chat, metadata) {
     });
 }
 
-// --- Core backup logic (extracted from executeBackupLogic) ---
+// --- 核心备份逻辑封装 (接收具体数据) ---
 async function executeBackupLogic_Core(chat, chat_metadata_to_backup, settings) {
     const currentTimestamp = Date.now();
     logDebug(`(封装) 开始执行核心备份逻辑 @ ${new Date(currentTimestamp).toLocaleTimeString()}`);
@@ -426,26 +426,27 @@ async function executeBackupLogic_Core(chat, chat_metadata_to_backup, settings) 
                 console.timeEnd('[聊天自动备份] Web Worker 深拷贝时间');
                 logDebug('(封装) 从 Worker 收到拷贝后的数据');
             } catch(workerError) {
+                 // ... 主线程回退逻辑，使用传入的 chat 和 chat_metadata_to_backup ...
                  console.error('[聊天自动备份] (封装) Worker 深拷贝失败，将尝试在主线程执行:', workerError);
-                 console.time('[聊天自动备份] 主线程深拷贝时间 (Worker失败后)');
-                 try {
-                     copiedChat = structuredClone(chat);
-                     copiedMetadata = structuredClone(chat_metadata_to_backup); // 使用传入的数据
-                 } catch (structuredCloneError) {
-                    try {
-                        copiedChat = JSON.parse(JSON.stringify(chat));
-                        copiedMetadata = JSON.parse(JSON.stringify(chat_metadata_to_backup)); // 使用传入的数据
-                    } catch (jsonError) {
-                        console.error('[聊天自动备份] (封装) 主线程深拷贝也失败:', jsonError);
-                        throw new Error("无法完成聊天数据的深拷贝");
-                    }
-                 }
-                 console.timeEnd('[聊天自动备份] 主线程深拷贝时间 (Worker失败后)');
+                  console.time('[聊天自动备份] 主线程深拷贝时间 (Worker失败后)');
+                  try {
+                      copiedChat = structuredClone(chat);
+                      copiedMetadata = structuredClone(chat_metadata_to_backup); // 使用传入的数据
+                  } catch (structuredCloneError) {
+                     try {
+                         copiedChat = JSON.parse(JSON.stringify(chat));
+                         copiedMetadata = JSON.parse(JSON.stringify(chat_metadata_to_backup)); // 使用传入的数据
+                     } catch (jsonError) {
+                         console.error('[聊天自动备份] (封装) 主线程深拷贝也失败:', jsonError);
+                         throw new Error("无法完成聊天数据的深拷贝");
+                     }
+                  }
+                  console.timeEnd('[聊天自动备份] 主线程深拷贝时间 (Worker失败后)');
             }
         } else {
-            // Worker 不可用，直接在主线程执行
+            // Worker 不可用，直接在主线程执行 (使用传入的 chat 和 chat_metadata_to_backup)
             console.time('[聊天自动备份] 主线程深拷贝时间 (无Worker)');
-            try {
+             try {
                  copiedChat = structuredClone(chat);
                  copiedMetadata = structuredClone(chat_metadata_to_backup); // 使用传入的数据
              } catch (structuredCloneError) {
@@ -454,7 +455,7 @@ async function executeBackupLogic_Core(chat, chat_metadata_to_backup, settings) 
                     copiedMetadata = JSON.parse(JSON.stringify(chat_metadata_to_backup)); // 使用传入的数据
                 } catch (jsonError) {
                     console.error('[聊天自动备份] (封装) 主线程深拷贝失败:', jsonError);
-                    throw new Error("无法完成聊天数据的深拷贝"); // 抛出错误终止备份
+                    throw new Error("无法完成聊天数据的深拷贝");
                 }
              }
             console.timeEnd('[聊天自动备份] 主线程深拷贝时间 (无Worker)');
@@ -473,7 +474,7 @@ async function executeBackupLogic_Core(chat, chat_metadata_to_backup, settings) 
             lastMessageId: lastMsgIndex,
             lastMessagePreview,
             chat: copiedChat,
-            metadata: copiedMetadata || {}
+            metadata: copiedMetadata || {} // 确保 metadata 总是对象
         };
 
         // 4. 检查当前聊天是否已有基于最后消息ID的备份 (避免完全相同的备份)
@@ -488,17 +489,18 @@ async function executeBackupLogic_Core(chat, chat_metadata_to_backup, settings) 
             const existingTimestamp = existingBackups[existingBackupIndex].timestamp;
             if (backup.timestamp > existingTimestamp) {
                 // 新备份更新，删除旧的同 ID 备份
-                logDebug(`发现具有相同最后消息ID (${lastMsgIndex}) 的旧备份 (时间戳 ${existingTimestamp})，将删除旧备份以便保存新备份 (时间戳 ${backup.timestamp})`);
+                logDebug(`(封装) 发现具有相同最后消息ID (${lastMsgIndex}) 的旧备份 (时间戳 ${existingTimestamp})，将删除旧备份以便保存新备份 (时间戳 ${backup.timestamp})`);
                 await deleteBackup(chatKey, existingTimestamp);
+                // 注意：不需要从 existingBackups 数组中 splice，因为它不再用于全局清理
             } else {
                 // 旧备份更新或相同，跳过本次保存
-                logDebug(`发现具有相同最后消息ID (${lastMsgIndex}) 且时间戳更新或相同的备份 (时间戳 ${existingTimestamp} vs ${backup.timestamp})，跳过本次保存`);
+                logDebug(`(封装) 发现具有相同最后消息ID (${lastMsgIndex}) 且时间戳更新或相同的备份 (时间戳 ${existingTimestamp} vs ${backup.timestamp})，跳过本次保存`);
                 needsSave = false;
             }
         }
 
         if (!needsSave) {
-            logDebug('备份已存在或无需更新 (基于lastMessageId和时间戳比较)，跳过保存和全局清理步骤');
+            logDebug('(封装) 备份已存在或无需更新 (基于lastMessageId和时间戳比较)，跳过保存和全局清理步骤');
             return false; // 不需要保存，返回 false
         }
 
@@ -508,11 +510,11 @@ async function executeBackupLogic_Core(chat, chat_metadata_to_backup, settings) 
 
         // --- 优化后的清理逻辑 ---
         // 7. 获取所有备份的 *主键* 并限制总数量
-        logDebug(`获取所有备份的主键，以检查是否超出系统限制 (${settings.maxTotalBackups})`);
+        logDebug(`(封装) 获取所有备份的主键，以检查是否超出系统限制 (${settings.maxTotalBackups})`);
         const allBackupKeys = await getAllBackupKeys(); // 调用新函数，只获取键
 
         if (allBackupKeys.length > settings.maxTotalBackups) {
-            logDebug(`总备份数 (${allBackupKeys.length}) 超出系统限制 (${settings.maxTotalBackups})`);
+            logDebug(`(封装) 总备份数 (${allBackupKeys.length}) 超出系统限制 (${settings.maxTotalBackups})`);
 
             // 按时间戳升序排序键 (key[1] 是 timestamp)
             // 这样最旧的备份的键会排在数组前面
@@ -522,19 +524,19 @@ async function executeBackupLogic_Core(chat, chat_metadata_to_backup, settings) 
             // 获取数组开头的 numToDelete 个键，这些是需要删除的最旧备份的键
             const keysToDelete = allBackupKeys.slice(0, numToDelete);
 
-            logDebug(`准备删除 ${keysToDelete.length} 个最旧的备份 (基于键)`);
+            logDebug(`(封装) 准备删除 ${keysToDelete.length} 个最旧的备份 (基于键)`);
 
             // 使用Promise.all并行删除
             await Promise.all(keysToDelete.map(key => {
                 const oldChatKey = key[0];
                 const oldTimestamp = key[1];
-                logDebug(`删除旧备份 (基于键): chatKey=${oldChatKey}, timestamp=${new Date(oldTimestamp).toLocaleString()}`);
+                logDebug(`(封装) 删除旧备份 (基于键): chatKey=${oldChatKey}, timestamp=${new Date(oldTimestamp).toLocaleString()}`);
                 // 调用 deleteBackup，它接受 chatKey 和 timestamp
                 return deleteBackup(oldChatKey, oldTimestamp);
             }));
-            logDebug(`${keysToDelete.length} 个旧备份已删除`);
+            logDebug(`(封装) ${keysToDelete.length} 个旧备份已删除`);
         } else {
-            logDebug(`总备份数 (${allBackupKeys.length}) 未超出限制 (${settings.maxTotalBackups})，无需清理`);
+            logDebug(`(封装) 总备份数 (${allBackupKeys.length}) 未超出限制 (${settings.maxTotalBackups})，无需清理`);
         }
         // --- 清理逻辑结束 ---
 
@@ -795,7 +797,7 @@ async function restoreBackup(backupData) {
         logDebug(`步骤 5: 临时替换全局 chat 和 metadata 以便保存...`);
         let globalContext = getContext();
         let originalGlobalChat = globalContext.chat.slice();
-        let originalGlobalMetadata = structuredClone(globalContext.chatMetadata);
+        let originalGlobalMetadata = structuredClone(globalContext.chat_metadata);
 
         globalContext.chat.length = 0;
         chatToSave.forEach(msg => globalContext.chat.push(msg));
@@ -1394,11 +1396,3 @@ jQuery(async () => {
         );
     }
 });
-
-// --- 核心备份逻辑 (接收 settings 作为参数) ---
-async function executeBackupLogic(settings) {
-    const context = getContext();
-    const { chat, chatMetadata } = context; // 修改为使用 chatMetadata
-
-    return await executeBackupLogic_Core(chat, chatMetadata, settings);
-}
